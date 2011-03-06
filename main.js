@@ -1,40 +1,77 @@
-var stream = require('stream')
-  , fs = require('fs')
-  , util = require('util')
-  ;
+var Stream = require('stream').Stream
+    , util = require('util')
+    //, Queue = require('./queue');
 
-BufferedStream = function (limit) {
-  if (typeof limit === 'undefined') {
-    limit = Infinity;
-  }
-  this.limit = limit;
-  this.size = 0;
-  this.chunks = [];
-  this.writable = true;
-  this.readable = true;
+var slice = Array.prototype.slice;
+
+/**
+ * Stream that will buffer writes, designed for piping
+ */
+function BufferedStream (limit) {
+    this.readable = true;
+    this.writable = true;
+
+    this.buffering = true;
+    this.limit = limit || 4096;
+    this.size = 0;
+    this.dataQueue = [];
 }
-util.inherits(BufferedStream, stream.Stream);
-BufferedStream.prototype.pipe = function () {
-  var dest = this.dest = arguments[0];
-  if (this.resume) this.resume();
-  stream.Stream.prototype.pipe.apply(this, arguments);
-  this.chunks.forEach(function (c) {dest.write(c)})
-  this.size = 0;
-  delete this.chunks;
+
+util.inherits(BufferedStream, Stream);
+
+BufferedStream.prototype.bufferSize = function() {
+    return this.dataQueue.length;
 }
-BufferedStream.prototype.write = function (chunk) {
-  if (this.dest) {
+
+BufferedStream.prototype.pipe = function (dest) {
+    Stream.prototype.pipe.apply(this, slice.call(arguments));
+
+    this.flush();
+}
+
+BufferedStream.prototype.send = function() {
+    if(this.buffering || !this.dataQueue.length) return;
+
+    var chunk = this.dataQueue.shift();
+    this.size -= chunk.length;
     this.emit('data', chunk);
-    return;
-  }
-  this.chunks.push(chunk);
-  this.size += chunk.length;
-  if (this.limit < this.size) {
-    this.pause();
-  }
 }
+
+BufferedStream.prototype.flush = function() {
+    this.buffering = false;
+    this.send();
+
+    if(this.dataQueue.length) {
+        var source = this;
+        process.nextTick(function() {
+            source.send();
+        });
+    }
+}
+
+BufferedStream.prototype.write = function (chunk) {
+    this.dataQueue.push(chunk);
+
+    if (this.limit < this.size) {
+        this.emit('bufferOverrun', this.size);
+    }
+
+    if(!this.buffering)
+        this.flush();
+}
+
+BufferedStream.prototype.pause = function() {
+    this.buffering = true;
+    this.emit('pause');
+}
+
+BufferedStream.prototype.resume = function() {
+    this.emit('resume');
+    this.flush();
+}
+
 BufferedStream.prototype.end = function () {
-  this.emit('end');
+    this.emit('end');
 }
 
 exports.BufferedStream = BufferedStream;
